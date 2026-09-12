@@ -326,7 +326,10 @@ Register-Test 'The default runtime folder sits inside the install root' {
 }
 
 Register-Test 'Codex home resolution prefers the parameter, then CODEX_HOME, then the user profile' {
-    $temporary = Join-Path $env:TEMP ('dse-home-' + [Guid]::NewGuid().ToString('N'))
+    # Hosted Windows runners may expose TEMP using an 8.3 user directory alias.
+    # This test checks precedence, so compare canonical absolute paths rather
+    # than treating two spellings of the same directory as different homes.
+    $temporary = [IO.Path]::GetFullPath((Join-Path $env:TEMP ('dse-home-' + [Guid]::NewGuid().ToString('N'))))
     New-Item -ItemType Directory -Path $temporary -Force | Out-Null
     $original = $env:CODEX_HOME
     try {
