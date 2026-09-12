@@ -389,6 +389,10 @@ managed block.
 
 The launcher is separate and is meant for ordinary daily use:
 
+If you supplied a custom `-CodexHome` or `-InstallRoot` when installing, pass
+the same options to the launcher and verifier. An explicit `-CodexHome` is
+passed only to the new app process; it does not change Windows settings.
+
 ```powershell
 .\scripts\Start-DeepSeekNative.ps1
 ```

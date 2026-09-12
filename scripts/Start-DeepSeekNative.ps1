@@ -247,6 +247,11 @@ try {
     $startInfo.WorkingDirectory = Split-Path -Parent $desktopInfo.ExecutablePath
     $startInfo.UseShellExecute = $false
     $startInfo.EnvironmentVariables['CODEX_CLI_PATH'] = $codexExe
+    if (-not [string]::IsNullOrWhiteSpace($CodexHome)) {
+        # An explicit configuration folder must reach the app we just checked.
+        # This changes only the child's environment, not the user's settings.
+        $startInfo.EnvironmentVariables['CODEX_HOME'] = $resolvedCodexHome
+    }
 
     if ($script:LogPath) {
         Write-DseLog -Message "Launching desktop=$($desktopInfo.ExecutablePath) backend=$codexExe" -LogPath $script:LogPath | Out-Null
