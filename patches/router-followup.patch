@@ -1,0 +1,592 @@
+diff --git a/src/namespace-relay.mjs b/src/namespace-relay.mjs
+index 7c523b2..1f96135 100644
+--- a/src/namespace-relay.mjs
++++ b/src/namespace-relay.mjs
+@@ -14,6 +14,7 @@ import {
+ import {
+   buildInterruptAgentCall,
+   filterAlreadyInterrupted,
++  followupTargetFromCall,
+   interruptTargetFromCall,
+ } from "./subagent-completion.mjs";
+ 
+@@ -2278,8 +2279,21 @@ function trackInterruptFromItem(item, interrupted) {
+   if (target) interrupted.add(target);
+ }
+ 
+-function appendInterruptCallsToOutput(output, pending, interrupted) {
+-  const remaining = filterAlreadyInterrupted(pending, interrupted);
++// A child the model resumed (followup_task) in this response. Its cleanup
++// interrupt would be appended beside the model's new work and Codex has been
++// seen running the interrupt after the follow-up, cancelling the child's turn.
++function trackResumeFromItem(item, resumed) {
++  if (!item) return;
++  const target = followupTargetFromCall(item);
++  if (target) resumed.add(target);
++}
++
++function appendInterruptCallsToOutput(output, pending, interrupted, resumed) {
++  // Drop resumed targets first: they are new work, not idle finished children.
++  const eligible = resumed && resumed.size
++    ? filterAlreadyInterrupted(pending, resumed)
++    : pending;
++  const remaining = filterAlreadyInterrupted(eligible, interrupted);
+   if (!remaining.length) return { output, injected: 0, remaining: [] };
+   const base = Array.isArray(output) ? [...output] : [];
+   for (const item of base) trackInterruptFromItem(item, interrupted);
+@@ -2433,6 +2447,7 @@ export class NamespaceToolCallTransform extends Transform {
+   #pendingInterrupts;
+   #injectOnly = false;
+   #interruptedTargets = new Set();
++  #resumedTargets = new Set();
+   #lastSequence = 0;
+   #injectQueue = [];
+   #injectionsDone = false;
+@@ -3709,18 +3724,29 @@ export class NamespaceToolCallTransform extends Transform {
+     if (!event || typeof event !== "object") return;
+     this.#lastSequence = nextSequence(event, this.#lastSequence);
+     trackInterruptFromItem(event.item, this.#interruptedTargets);
++    trackResumeFromItem(event.item, this.#resumedTargets);
+     if (Array.isArray(event.output)) {
+-      for (const item of event.output) trackInterruptFromItem(item, this.#interruptedTargets);
++      for (const item of event.output) {
++        trackInterruptFromItem(item, this.#interruptedTargets);
++        trackResumeFromItem(item, this.#resumedTargets);
++      }
+     }
+     if (Array.isArray(event.response?.output)) {
+       for (const item of event.response.output) {
+         trackInterruptFromItem(item, this.#interruptedTargets);
++        trackResumeFromItem(item, this.#resumedTargets);
+       }
+     }
+   }
+ 
+   #remainingInterrupts() {
+-    return filterAlreadyInterrupted(this.#pendingInterrupts, this.#interruptedTargets);
++    // A model-authored interrupt or a resume both take a child out of this
++    // response's cleanup set; only an untouched finished child is closed.
++    const notInterrupted = filterAlreadyInterrupted(
++      this.#pendingInterrupts,
++      this.#interruptedTargets,
++    );
++    return filterAlreadyInterrupted(notInterrupted, this.#resumedTargets);
+   }
+ 
+   #drainInterruptBlocks() {
+@@ -3812,22 +3838,28 @@ export class NamespaceToolCallTransform extends Transform {
+     if (!payload || typeof payload !== "object") return payload;
+     // Non-streaming Responses put completed function calls in `output`.
+     if (Array.isArray(payload.output)) {
+-      for (const item of payload.output) trackInterruptFromItem(item, this.#interruptedTargets);
++      for (const item of payload.output) {
++        trackInterruptFromItem(item, this.#interruptedTargets);
++        trackResumeFromItem(item, this.#resumedTargets);
++      }
+       const result = appendInterruptCallsToOutput(
+         payload.output,
+         this.#pendingInterrupts,
+         this.#interruptedTargets,
++        this.#resumedTargets,
+       );
+       if (result.injected) payload = { ...payload, output: result.output };
+     }
+     if (payload.response && Array.isArray(payload.response.output)) {
+       for (const item of payload.response.output) {
+         trackInterruptFromItem(item, this.#interruptedTargets);
++        trackResumeFromItem(item, this.#resumedTargets);
+       }
+       const result = appendInterruptCallsToOutput(
+         payload.response.output,
+         this.#pendingInterrupts,
+         this.#interruptedTargets,
++        this.#resumedTargets,
+       );
+       if (result.injected) {
+         payload = {
+diff --git a/src/subagent-completion.mjs b/src/subagent-completion.mjs
+index e7a3809..20883b6 100644
+--- a/src/subagent-completion.mjs
++++ b/src/subagent-completion.mjs
+@@ -113,6 +113,40 @@ export function interruptTargetFromCall(item) {
+   return typeof target === "string" && target.trim() ? target.trim() : undefined;
+ }
+ 
++// Collaboration tools that dispatch new work to an already-existing child. A
++// model that calls one of these in a response is resuming that child, so the
++// router must not append its own interrupt_agent for the same target: both
++// calls land in one response, and Codex has been observed running the injected
++// interrupt after the model's follow-up, cancelling the resumed work (a native
++// run produced completed -> interrupted -> completed turn history after the
++// parent retried). `followup_task` is the name seen in that run; `send_input`
++// is the older spelling of the same operation, and both stay in one set so a
++// rename only touches this line.
++const FOLLOWUP_TASK_NAMES = new Set(["followup_task", "send_input"]);
++
++export function isFollowupTaskCall(item) {
++  if (!item || item.type !== "function_call") return false;
++  if (item.namespace === "collaboration" && FOLLOWUP_TASK_NAMES.has(item.name)) {
++    return true;
++  }
++  if (typeof item.name !== "string") return false;
++  const flattenedPrefix = "collaboration__";
++  if (
++    item.name.startsWith(flattenedPrefix) &&
++    FOLLOWUP_TASK_NAMES.has(item.name.slice(flattenedPrefix.length))
++  ) {
++    return true;
++  }
++  return FOLLOWUP_TASK_NAMES.has(item.name);
++}
++
++export function followupTargetFromCall(item) {
++  if (!isFollowupTaskCall(item)) return undefined;
++  const args = parseFunctionCallArgs(item);
++  const target = args?.target;
++  return typeof target === "string" && target.trim() ? target.trim() : undefined;
++}
++
+ export function collaborationToolAvailable(namespaces) {
+   if (!(namespaces instanceof Map)) return false;
+   const names = namespaces.get("collaboration");
+@@ -129,26 +163,47 @@ export function collaborationToolAvailable(namespaces) {
+ // own prose; scanning them meant a turn that merely *quoted* a FINAL_ANSWER
+ // envelope (docs, a changelog, this very feature under discussion) had a
+ // fabricated interrupt_agent call spliced into its response.
++//
++// The walk is lifecycle-ordered, not set arithmetic. A child's most recent
++// marker decides whether it still needs a close: a follow-up call after its
++// FINAL_ANSWER resumes it (an old envelope must not cancel the new work), and a
++// fresh FINAL_ANSWER after an interrupt completes it again (a new finished turn
++// is still eligible for cleanup). `finished` and `interrupted` keep their
++// original ever-seen meaning for callers that only want the inventory.
+ export function collectFinishedSubagentState(input) {
+   const finished = new Set();
+   const interrupted = new Set();
++  // Keyed by normalized target so "/root/child" and "child" are one child.
++  const lifecycle = new Map();
+   if (!Array.isArray(input)) {
+     return { finished, interrupted, pending: [] };
+   }
+   for (const item of input) {
+     if (!item || typeof item !== "object") continue;
+     if (item.type === "function_call" || item.type === "custom_tool_call") {
+-      const target = interruptTargetFromCall(item);
+-      if (target) interrupted.add(target);
++      const interruptTarget = interruptTargetFromCall(item);
++      if (interruptTarget) {
++        interrupted.add(interruptTarget);
++        lifecycle.set(normalizeTarget(interruptTarget), "closed");
++        continue;
++      }
++      const followupTarget = followupTargetFromCall(item);
++      if (followupTarget) {
++        lifecycle.set(normalizeTarget(followupTarget), "active");
++      }
+       continue;
+     }
+     if (item.type === "agent_message") {
+       for (const target of targetsFromAgentMessage(item)) {
+-        if (!isRootTarget(target)) finished.add(target);
++        if (isRootTarget(target)) continue;
++        finished.add(target);
++        lifecycle.set(normalizeTarget(target), "finished");
+       }
+     }
+   }
+-  const pending = [...finished].filter((target) => !interrupted.has(target));
++  const pending = [...finished].filter(
++    (target) => lifecycle.get(normalizeTarget(target)) === "finished",
++  );
+   return { finished, interrupted, pending };
+ }
+ 
+@@ -175,12 +230,17 @@ export function pendingInterruptTargets(
+   return collectFinishedSubagentState(input).pending;
+ }
+ 
++// Codex accepts both "/root/child" and "child" forms. The same child can be
++// named either way across a request and its response, so every lifecycle key
++// and every interrupt/resume comparison normalizes through here.
++function normalizeTarget(value) {
++  return value.replace(/^\/+/, "").replace(/^root\//, "");
++}
++
+ function sameTarget(a, b) {
+   if (a === b) return true;
+   if (typeof a !== "string" || typeof b !== "string") return false;
+-  // Codex accepts both "/root/child" and "child" forms for interrupt_agent.
+-  const normalize = (value) => value.replace(/^\/+/, "").replace(/^root\//, "");
+-  return normalize(a) === normalize(b);
++  return normalizeTarget(a) === normalizeTarget(b);
+ }
+ 
+ export function filterAlreadyInterrupted(pending, interruptedTargets) {
+diff --git a/test/namespace-relay.test.mjs b/test/namespace-relay.test.mjs
+index 83b47ac..fa1dd43 100644
+--- a/test/namespace-relay.test.mjs
++++ b/test/namespace-relay.test.mjs
+@@ -5589,3 +5589,94 @@ test("the kimi route still copies nothing when no tool carries a foreign ref", (
+   ];
+   assert.equal(repairToolSchemaRoots(tools, { inlineForeignRefs: true }), tools);
+ });
++
++function resumableCollaborationNamespaces() {
++  return flattenNamespaceTools([
++    {
++      type: "namespace",
++      name: "collaboration",
++      tools: [
++        { type: "function", name: "spawn_agent" },
++        { type: "function", name: "interrupt_agent" },
++        { type: "function", name: "followup_task" },
++      ],
++    },
++  ]).namespaces;
++}
++
++function injectedInterruptTargets(output) {
++  const targets = new Set();
++  for (const line of output.split("\n")) {
++    if (!line.startsWith("data: ")) continue;
++    const event = JSON.parse(line.slice(6));
++    const items = [
++      ...(event.item ? [event.item] : []),
++      ...(Array.isArray(event.output) ? event.output : []),
++      ...(Array.isArray(event.response?.output) ? event.response.output : []),
++    ];
++    for (const item of items) {
++      if (typeof item?.call_id !== "string") continue;
++      if (!item.call_id.startsWith("call_router_interrupt_")) continue;
++      if (typeof item.arguments !== "string" || !item.arguments) continue;
++      targets.add(JSON.parse(item.arguments).target);
++    }
++  }
++  return [...targets];
++}
++
++test("a follow-up summarised only in response.completed still blocks its own interrupt", async () => {
++  const namespaces = resumableCollaborationNamespaces();
++  const followup = {
++    type: "function_call",
++    name: "followup_task",
++    namespace: "collaboration",
++    call_id: "call_followup",
++    arguments: JSON.stringify({ target: "/root/deepseek_file_task" }),
++  };
++  // The follow-up is visible only through the terminal summary.
++  const events = [
++    { type: "response.completed", sequence_number: 1, response: { output: [followup] } },
++  ].map((event) => "data: " + JSON.stringify(event) + "\n\n");
++  const output = await collect(
++    Readable.from(events).pipe(
++      new NamespaceToolCallTransform(namespaces, "text/event-stream", undefined, {
++        pendingInterrupts: ["/root/deepseek_file_task", "/root/idle"],
++      }),
++    ),
++  );
++  assert.deepEqual(injectedInterruptTargets(output), ["/root/idle"]);
++  assert.match(output, /"name":"followup_task"/u);
++});
++
++test("non-stream response.output suppresses the interrupt for a resumed child", async () => {
++  const namespaces = resumableCollaborationNamespaces();
++  const body = Buffer.from(
++    JSON.stringify({
++      response: {
++        output: [
++          {
++            type: "function_call",
++            name: "collaboration__followup_task",
++            call_id: "call_followup",
++            arguments: JSON.stringify({ target: "/root/deepseek_file_task" }),
++          },
++        ],
++      },
++    }),
++    "utf8",
++  );
++  const output = await collect(
++    Readable.from([body]).pipe(
++      new NamespaceToolCallTransform(namespaces, "application/json", undefined, {
++        pendingInterrupts: ["/root/deepseek_file_task", "/root/idle"],
++      }),
++    ),
++  );
++  const parsed = JSON.parse(output);
++  assert.equal(parsed.response.output[0].name, "followup_task");
++  assert.equal(parsed.response.output[0].namespace, "collaboration");
++  assert.deepEqual(
++    parsed.response.output.slice(1).map((item) => JSON.parse(item.arguments).target),
++    ["/root/idle"],
++  );
++});
+diff --git a/test/subagent-completion.test.mjs b/test/subagent-completion.test.mjs
+index 9a4a003..e7bab3d 100644
+--- a/test/subagent-completion.test.mjs
++++ b/test/subagent-completion.test.mjs
+@@ -7,6 +7,8 @@ import {
+   pendingInterruptTargets,
+   buildInterruptAgentCall,
+   filterAlreadyInterrupted,
++  followupTargetFromCall,
++  isFollowupTaskCall,
+ } from "../src/subagent-completion.mjs";
+ import {
+   NamespaceToolCallTransform,
+@@ -327,3 +329,255 @@ test("buildInterruptAgentCall shapes native collaboration call", () => {
+     arguments: JSON.stringify({ target: "/root/child" }),
+   });
+ });
++
++// --- automatic cleanup must not cancel a child the model just resumed --------
++
++// The collaboration inventory a parent really sees: the resume tools are
++// advertised alongside spawn/interrupt, so the relay restores their flattened
++// names.
++function resumableCollaborationNamespaces() {
++  return flattenNamespaceTools([
++    {
++      type: "namespace",
++      name: "collaboration",
++      tools: [
++        { type: "function", name: "spawn_agent" },
++        { type: "function", name: "interrupt_agent" },
++        { type: "function", name: "wait_agent" },
++        { type: "function", name: "followup_task" },
++        { type: "function", name: "send_input" },
++      ],
++    },
++  ]).namespaces;
++}
++
++function followupCall(target, name, namespace) {
++  return {
++    type: "function_call",
++    name,
++    ...(namespace === undefined ? {} : { namespace }),
++    call_id: "call_followup",
++    arguments: JSON.stringify({ target }),
++  };
++}
++
++// Every target the transform injected an interrupt_agent call for, drawn from
++// the stream itself (opening, closing, and completed-summary copies collapse
++// into one set).
++function injectedTargets(output) {
++  const targets = new Set();
++  for (const line of output.split("\n")) {
++    if (!line.startsWith("data: ")) continue;
++    const event = JSON.parse(line.slice(6));
++    const items = [
++      ...(event.item ? [event.item] : []),
++      ...(Array.isArray(event.output) ? event.output : []),
++      ...(Array.isArray(event.response?.output) ? event.response.output : []),
++    ];
++    for (const item of items) {
++      if (typeof item?.call_id !== "string") continue;
++      if (!item.call_id.startsWith("call_router_interrupt_")) continue;
++      if (typeof item.arguments !== "string" || !item.arguments) continue;
++      targets.add(JSON.parse(item.arguments).target);
++    }
++  }
++  return [...targets];
++}
++
++test("follow-up calls are recognized in namespaced, flattened, and bare forms", () => {
++  const args = JSON.stringify({ target: "/root/child" });
++  const forms = [
++    { type: "function_call", name: "followup_task", namespace: "collaboration", call_id: "c1", arguments: args },
++    { type: "function_call", name: "collaboration__followup_task", call_id: "c2", arguments: args },
++    { type: "function_call", name: "followup_task", call_id: "c3", arguments: args },
++    { type: "function_call", name: "collaboration__send_input", call_id: "c4", arguments: args },
++    { type: "function_call", name: "send_input", namespace: "collaboration", call_id: "c5", arguments: args },
++  ];
++  for (const call of forms) {
++    assert.equal(isFollowupTaskCall(call), true, call.call_id);
++    assert.equal(followupTargetFromCall(call), "/root/child", call.call_id);
++  }
++  // Interrupts and ordinary calls are never resumptions.
++  assert.equal(
++    isFollowupTaskCall({
++      type: "function_call",
++      name: "interrupt_agent",
++      namespace: "collaboration",
++      call_id: "c6",
++      arguments: args,
++    }),
++    false,
++  );
++  assert.equal(
++    followupTargetFromCall({ type: "function_call", name: "exec_command", call_id: "c7", arguments: args }),
++    undefined,
++  );
++  // A follow-up without a usable target is not evidence of a resume.
++  assert.equal(
++    followupTargetFromCall({ type: "function_call", name: "followup_task", call_id: "c8", arguments: "{}" }),
++    undefined,
++  );
++});
++
++test("a follow-up after FINAL_ANSWER leaves the child running, not pending cleanup", () => {
++  const input = [
++    finalAnswerMessage("/root/deepseek_file_task"),
++    followupCall("deepseek_file_task", "collaboration__followup_task"),
++  ];
++  const state = collectFinishedSubagentState(input);
++  // The envelope is still inventory...
++  assert.deepEqual([...state.finished], ["/root/deepseek_file_task"]);
++  // ...but the newer follow-up (bare alias of the same child) resumes it.
++  assert.deepEqual(state.pending, []);
++  assert.deepEqual(
++    pendingInterruptTargets(input, { namespaces: resumableCollaborationNamespaces() }),
++    [],
++  );
++});
++
++test("a new FINAL_ANSWER after an interrupt is eligible for cleanup again", () => {
++  const input = [
++    finalAnswerMessage("/root/child"),
++    {
++      type: "function_call",
++      name: "collaboration__interrupt_agent",
++      call_id: "call_close",
++      arguments: JSON.stringify({ target: "/root/child" }),
++    },
++    finalAnswerMessage("/root/child", "second pass"),
++  ];
++  const state = collectFinishedSubagentState(input);
++  assert.deepEqual([...state.interrupted], ["/root/child"]);
++  assert.deepEqual(state.pending, ["/root/child"]);
++});
++
++test("follow-up then a fresh FINAL_ANSWER still queues cleanup for the new turn", () => {
++  const input = [
++    finalAnswerMessage("/root/child"),
++    followupCall("/root/child", "collaboration__followup_task"),
++    finalAnswerMessage("/root/child", "second pass"),
++  ];
++  assert.deepEqual(collectFinishedSubagentState(input).pending, ["/root/child"]);
++});
++
++test("an untouched finished child is still cleaned up beside a resumed one", () => {
++  const input = [
++    finalAnswerMessage("/root/resumed"),
++    finalAnswerMessage("/root/idle"),
++    followupCall("/root/resumed", "followup_task"),
++  ];
++  assert.deepEqual(collectFinishedSubagentState(input).pending, ["/root/idle"]);
++});
++
++test("stream transform does not close a child the model resumed in the same response", async () => {
++  const namespaces = resumableCollaborationNamespaces();
++  const followup = followupCall("/root/deepseek_file_task", "collaboration__followup_task");
++  const pendingInterrupts = ["/root/deepseek_file_task", "/root/other_finished"];
++  const resumedEvents = [
++    { type: "response.output_item.done", sequence_number: 1, item: followup },
++    { type: "response.completed", sequence_number: 2, response: { output: [followup] } },
++  ];
++  const output = await collect(
++    Readable.from(resumedEvents.map((event) => `data: ${JSON.stringify(event)}\n\n`)).pipe(
++      new NamespaceToolCallTransform(namespaces, "text/event-stream", "kimi-oauth/k3", {
++        pendingInterrupts,
++      }),
++    ),
++  );
++  // The child the model just resumed is left running; the idle one is closed.
++  assert.deepEqual(injectedTargets(output), ["/root/other_finished"]);
++  // The model's own follow-up survives the relay.
++  assert.match(output, /"name":"followup_task"/);
++  assert.match(output, /"namespace":"collaboration"/);
++
++  // Negative control: the same response without a follow-up closes both
++  // children, so the suppression above is caused by the resume, not a skip.
++  const work = { type: "function_call", name: "exec_command", call_id: "call_work", arguments: "{}" };
++  const controlEvents = [
++    { type: "response.output_item.done", sequence_number: 1, item: work },
++    { type: "response.completed", sequence_number: 2, response: { output: [work] } },
++  ];
++  const control = await collect(
++    Readable.from(controlEvents.map((event) => `data: ${JSON.stringify(event)}\n\n`)).pipe(
++      new NamespaceToolCallTransform(namespaces, "text/event-stream", "kimi-oauth/k3", {
++        pendingInterrupts,
++      }),
++    ),
++  );
++  assert.deepEqual(injectedTargets(control).sort(), [
++    "/root/deepseek_file_task",
++    "/root/other_finished",
++  ]);
++});
++
++test("native inject-only relay never interrupts a child the model resumed", async () => {
++  const namespaces = resumableCollaborationNamespaces();
++  const followup = followupCall("/root/deepseek_file_task", "followup_task", "collaboration");
++  const blocks = [
++    `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 1, item: followup })}\n\n`,
++    `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 2, response: { output: [followup] } })}\n\n`,
++  ];
++  const transform = new NamespaceToolCallTransform(namespaces, "text/event-stream", undefined, {
++    pendingInterrupts: ["/root/deepseek_file_task"],
++    injectOnly: true,
++  });
++  const output = await collect(Readable.from(blocks).pipe(transform));
++  assert.equal(output.includes("call_router_interrupt_"), false);
++  assert.match(output, /"name":"followup_task"/);
++
++  // Negative control: the same native stream without the follow-up is closed.
++  const idle = { type: "function_call", name: "wait_agent", namespace: "collaboration", call_id: "call_wait", arguments: "{}" };
++  const control = await collect(
++    Readable.from([
++      `event: response.output_item.done\ndata: ${JSON.stringify({ type: "response.output_item.done", sequence_number: 1, item: idle })}\n\n`,
++      `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 2, response: { output: [idle] } })}\n\n`,
++    ]).pipe(
++      new NamespaceToolCallTransform(namespaces, "text/event-stream", undefined, {
++        pendingInterrupts: ["/root/deepseek_file_task"],
++        injectOnly: true,
++      }),
++    ),
++  );
++  assert.match(control, /call_router_interrupt_/);
++});
++
++test("non-stream JSON leaves a resumed child open and closes the rest", async () => {
++  const namespaces = resumableCollaborationNamespaces();
++  // Bare target alias: pendingInterrupts carries the /root/ prefix.
++  const followup = followupCall("deepseek_file_task", "collaboration__followup_task");
++  const pendingInterrupts = ["/root/deepseek_file_task", "/root/other_finished"];
++  for (const wrap of [(items) => ({ output: items }), (items) => ({ response: { output: items } })]) {
++    const body = Buffer.from(JSON.stringify(wrap([followup])), "utf8");
++    const parsed = JSON.parse(
++      await collect(
++        Readable.from([body]).pipe(
++          new NamespaceToolCallTransform(namespaces, "application/json", "kimi-oauth/k3", {
++            pendingInterrupts,
++          }),
++        ),
++      ),
++    );
++    const items = parsed.response ? parsed.response.output : parsed.output;
++    assert.equal(items[0].name, "followup_task");
++    assert.equal(items[0].namespace, "collaboration");
++    assert.deepEqual(items.slice(1).map((item) => JSON.parse(item.arguments).target), [
++      "/root/other_finished",
++    ]);
++  }
++
++  // Negative control: without the follow-up the same payload closes both.
++  const work = { type: "function_call", name: "exec_command", call_id: "call_work", arguments: "{}" };
++  const control = JSON.parse(
++    await collect(
++      Readable.from([Buffer.from(JSON.stringify({ output: [work] }), "utf8")]).pipe(
++        new NamespaceToolCallTransform(namespaces, "application/json", "kimi-oauth/k3", {
++          pendingInterrupts,
++        }),
++      ),
++    ),
++  );
++  assert.deepEqual(
++    control.output.slice(1).map((item) => JSON.parse(item.arguments).target).sort(),
++    ["/root/deepseek_file_task", "/root/other_finished"],
++  );
++});

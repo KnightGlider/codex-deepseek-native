@@ -1,0 +1,35 @@
+# User state and credentials must never be committed.
+.env
+.env.*
+auth.json
+config.toml
+*.secret
+secrets/
+.state/
+# Generated builds, traces and downloads belong outside Git.
+.build/
+.artifacts/
+.validation/
+runtime/
+target/
+node_modules/
+.venv/
+__pycache__/
+*.exe
+*.dll
+*.zip
+*.tar
+*.tar.gz
+*.tar.zst
+*.zst
+*.7z
+*.log
+Thumbs.db
+.DS_Store
+*.jsonl
+verification-output/
+
+
+backups/
+logs/
+state/

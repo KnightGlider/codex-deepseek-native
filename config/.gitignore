@@ -1,0 +1,6 @@
+# Local overrides and captured secrets must never be committed.
+*.local.json
+*.local.toml
+*.secret
+secrets/
+.local/

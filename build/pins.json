@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Pinned inputs for the Windows x64 MSVC source build of the patched Codex CLI (native DeepSeek subagents) and its shareable zip bundle.",
+  "source": {
+    "repositoryUrl": "https://github.com/openai/codex.git",
+    "tag": "rust-v0.153.4",
+    "tagObjectSha": "042fb41b7c813ac7999105e886b2b7aa715b5081",
+    "commitSha": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+    "workspaceVersion": "0.153.4",
+    "checkoutLayout": "src/codex"
+  },
+  "patch": {
+    "path": "patches/codex-native-provider.patch",
+    "sha256": "5114784472499c99a42cd02dc05032eeabc9ef21ac528660f26bfeafcdb0217a",
+    "normalization": "UTF-8 without BOM, LF line endings, exactly one trailing newline",
+    "expectedChangedFiles": [
+      "codex-rs/Cargo.lock",
+      "codex-rs/core/src/agent/role.rs",
+      "codex-rs/core/src/agent/role_tests.rs",
+      "codex-rs/core/src/tools/handlers/multi_agents_tests.rs",
+      "codex-rs/core/tests/suite/multi_agent_resume.rs",
+      "codex-rs/core/tests/suite/subagent_notifications.rs"
+    ]
+  },
+  "toolchain": {
+    "rustupToolchain": "1.95.0-x86_64-pc-windows-msvc",
+    "rustVersion": "1.95.0",
+    "targetTriple": "x86_64-pc-windows-msvc",
+    "installProfile": "minimal"
+  },
+  "buildProfile": {
+    "default": "dev-small",
+    "allowed": [
+      "dev-small",
+      "dev",
+      "release"
+    ],
+    "notes": [
+      "dev-small inherits the upstream dev profile and sets opt-level 0, debug none, strip symbols. It keeps CI time and disk use far below a release build and matches the 'debug 0 / no incremental' requirement.",
+      "dev keeps debug=\"limited\" unless the build script forces debug=0; it is heavier than dev-small.",
+      "release uses lto = \"thin\", codegen-units = 4 and is expected to be far slower on a 4-core GitHub-hosted runner. Use it only when a smaller, optimized binary is worth the extra minutes.",
+      "No profile in this repository has been executed on the MSVC CI runner yet; the workflow is new and its first run is the validation."
+    ]
+  },
+  "runner": {
+    "runsOn": "windows-2022",
+    "architecture": "x64"
+  },
+  "paths": {
+    "workRootDefault": "C:/build",
+    "virtualRootDefault": "C:/build",
+    "layout": {
+      "source": "src/codex",
+      "cargoHome": "cargo",
+      "rustupHome": "rustup",
+      "targetDir": "target",
+      "tools": "tools",
+      "downloads": "downloads",
+      "patches": "patches",
+      "stage": "stage",
+      "dist": "dist",
+      "temp": "tmp",
+      "state": "state"
+    }
+  },
+  "tests": {
+    "mode": "cargo-nextest",
+    "unitTargets": [
+      "--lib"
+    ],
+    "unitFilters": [
+      "agent::role::tests",
+      "tools::handlers::multi_agents::tests"
+    ],
+    "integrationTarget": "all",
+    "integrationFilters": [
+      "suite::multi_agent_resume",
+      "suite::subagent_notifications"
+    ],
+    "nextestProfile": "local",
+    "rustMinStack": 8388608,
+    "testThreads": 2,
+    "noTestsAction": "fail",
+    "unitFilterSourceFiles": {
+      "agent::role::tests": "codex-rs/core/src/agent/role.rs",
+      "tools::handlers::multi_agents::tests": "codex-rs/core/src/tools/handlers/multi_agents.rs"
+    },
+    "notes": [
+      "Filters are compiled Rust module paths, not file names. role.rs declares `#[path = \"role_tests.rs\"] mod tests;` inside module `agent::role`, so the test name prefix is `agent::role::tests`; the file name role_tests.rs would match nothing.",
+      "tools/handlers/multi_agents.rs declares `#[path = \"multi_agents_tests.rs\"] mod tests;`, so its test name prefix is `tools::handlers::multi_agents::tests`.",
+      "Each filter is wrapped in a nextest filterset `test(<name>)` predicate; the patterns are OR-ed into one -E expression.",
+      "--no-tests fail makes a run that matches zero tests exit non-zero instead of passing silently.",
+      "--test-threads 2 keeps Windows test subprocess contention down on a 4-core hosted runner.",
+      "The build script also resolves each unit filter against the checked-out source before running nextest, so a filter that no longer names a real module fails early."
+    ]
+  },
+  "buildReceipt": {
+    "fileName": "build-receipt.json",
+    "schemaVersion": 1,
+    "writtenBy": "Step-Build, only after cargo build exits 0 and the binary is located",
+    "requiredFor": "Step-Package refuses to package without a receipt that matches the current plan and binary",
+    "fields": [
+      "schemaVersion",
+      "kind",
+      "publishable",
+      "sourceCommit",
+      "sourceTag",
+      "patchSha256",
+      "profile",
+      "toolchain",
+      "targetTriple",
+      "binarySha256",
+      "cargoVersion",
+      "rustcVersion",
+      "builtAtUtc",
+      "workflowRunId"
+    ]
+  },
+  "githubActions": {
+    "actions/checkout": {
+      "version": "v4.2.2",
+      "sha": "11bd71901bbe5b1630ceea73d27597364c9af683"
+    },
+    "actions/upload-artifact": {
+      "version": "v4.6.2",
+      "sha": "ea165f8d65b6e75b540449e92b4886f43607fa02"
+    }
+  },
+  "nextest": {
+    "version": "0.9.144",
+    "assetName": "cargo-nextest-0.9.144-x86_64-pc-windows-msvc.zip",
+    "url": "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.144/cargo-nextest-0.9.144-x86_64-pc-windows-msvc.zip",
+    "sha256": "edc18a0a36912d8add2a4856714aad8c128303c1de471f14716c2453318e719d",
+    "sizeBytes": 7478518
+  },
+  "helperManifest": {
+    "path": "verification/official-downloads.json",
+    "requiredAssets": [
+      "codex-code-mode-host-x86_64-pc-windows-msvc.exe",
+      "codex-command-runner-x86_64-pc-windows-msvc.exe",
+      "codex-windows-sandbox-setup-x86_64-pc-windows-msvc.exe"
+    ],
+    "bundleNameWithoutTargetSuffix": {
+      "codex-code-mode-host-x86_64-pc-windows-msvc.exe": "codex-code-mode-host.exe",
+      "codex-command-runner-x86_64-pc-windows-msvc.exe": "codex-command-runner.exe",
+      "codex-windows-sandbox-setup-x86_64-pc-windows-msvc.exe": "codex-windows-sandbox-setup.exe"
+    }
+  },
+  "runtimeManifest": {
+    "fileName": "runtime-manifest.json",
+    "writer": "build/New-RuntimeManifest.ps1",
+    "consumer": "scripts/DeepSeekNative.Common.ps1 -> Test-DseRuntimeManifest, discovered next to codex.exe using config/defaults.json -> runtimeManifestFileName",
+    "schema": {
+      "version": "string, plain workspace version (0.153.4); the installer compares this against its minimum version",
+      "files": "object map of file name -> lowercase sha256; the installer hashes each file in the same folder and requires no missing and no mismatched entries, which is why only the runtime executables are listed",
+      "extraKeys": "schemaVersion, product, kind, builtAtUtc, bundleName, buildProfile, toolchain and source{...} are ignored by the installer and carry provenance: source.commit is the patched openai/codex commit and source.patchSha256 is the digest of patches/codex-native-provider.patch"
+    },
+    "files": [
+      "codex.exe",
+      "codex-command-runner.exe",
+      "codex-windows-sandbox-setup.exe",
+      "codex-code-mode-host.exe"
+    ]
+  },
+  "bundle": {
+    "nameTemplate": "codex-native-deepseek-{version}-windows-x86_64-msvc",
+    "cliBinaryName": "codex.exe"
+  }
+}

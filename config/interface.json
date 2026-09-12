@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "product": "codex-deepseek-native",
+  "summary": "Filename and interface contract shared with the docs worker. Any change here must be reflected in docs/ and in tests/cases/05-Interface.Tests.ps1.",
+  "scripts": [
+    {
+      "path": "scripts/DeepSeekNative.Common.ps1",
+      "role": "shared helper library",
+      "invocation": "dot-sourced, not run directly",
+      "publicFunctions": [
+        "Get-DseDefaults",
+        "Get-DseInstallRoot",
+        "Get-DseCodexHome",
+        "Get-DseRuntimeDirectory",
+        "Get-DseStateDirectory",
+        "Get-DseLogDirectory",
+        "Get-DseBackupDirectory",
+        "Get-DseStatePath",
+        "Read-DseInstallState",
+        "Write-DseInstallState",
+        "Write-DseLog",
+        "Copy-DseBackup",
+        "Read-DseTextFile",
+        "Write-DseTextFile",
+        "Get-DseFileSha256",
+        "Test-DseManagedBlock",
+        "Set-DseManagedBlock",
+        "Remove-DseManagedBlock",
+        "Test-DseRuntimeDirectory",
+        "Invoke-DseVersionProbe",
+        "Test-DseMinimumVersion",
+        "Get-DseDesktopExecutable",
+        "Get-DseRunningDesktopProcesses",
+        "New-DseDesktopShortcut",
+        "Remove-DseDesktopShortcut"
+      ]
+    },
+    {
+      "path": "scripts/Install-DeepSeekNative.ps1",
+      "role": "setup",
+      "keyParameters": ["-RuntimeDirectory", "-CodexHome", "-InstallRoot", "-CreateDesktopShortcut", "-SkipVersionProbe", "-MinimumVersion", "-RuntimeManifest", "-SkipManifestVerification", "-AllowMissingRecommendedHelpers", "-WhatIf"],
+      "writes": ["<CodexHome>/config.toml managed block", "<CodexHome>/agents/deepseek_flash.toml", "<InstallRoot>/state/install-state.json", "<InstallRoot>/backups/*", "<InstallRoot>/logs/*"],
+      "neverWrites": ["model", "model_provider", "model_providers.* other than the documented managed block", "auth.json", "environment variables"]
+    },
+    {
+      "path": "scripts/Start-DeepSeekNative.ps1",
+      "role": "launcher",
+      "keyParameters": ["-RuntimeDirectory", "-InstallRoot", "-CodexHome", "-DesktopExePath", "-LogPath", "-CheckOnly", "-NoPause", "-AllowRunningDesktop", "-SkipVersionProbe", "-WaitForExit", "-ExitWatchSeconds", "-WhatIf"],
+      "behavior": "Locates the installed OpenAI.Codex Appx package, refuses while the app is already running, then starts app/ChatGPT.exe as a child process with CODEX_CLI_PATH set only for that child."
+    },
+    {
+      "path": "scripts/Test-DeepSeekNative.ps1",
+      "role": "read-only verification",
+      "keyParameters": ["-RuntimeDirectory", "-CodexHome", "-InstallRoot", "-RouterBaseUrl", "-RouterTimeoutSeconds", "-SkipRouterHealth", "-SkipDesktopCheck", "-SkipVersionProbe", "-RuntimeManifest", "-SkipManifestVerification", "-ReportPath", "-AsJson"],
+      "behavior": "Reads runtime path, model config and router health. Never writes unless -ReportPath is supplied. Prints the required real concurrent GPT + DeepSeek follow-up test."
+    },
+    {
+      "path": "scripts/Uninstall-DeepSeekNative.ps1",
+      "role": "rollback",
+      "keyParameters": ["-CodexHome", "-InstallRoot", "-ShortcutPath", "-RestoreBackup", "-RemoveBackups", "-KeepDesktopShortcut", "-WhatIf"],
+      "behavior": "Removes only the managed block, the role file this product created and the desktop shortcut this product created. The role file is deleted only when the install state records that setup created it and it is still unchanged. -RestoreBackup replaces config.toml only when the current file is byte-identical to the recorded post-install file; otherwise it refuses and leaves the file and the backup alone."
+    }
+  ],
+  "ownershipRules": {
+    "configManagedBlock": "Added between the BEGIN and END marker comments. The only part of config.toml this product ever writes.",
+    "roleFile": "Created by setup and recorded in install state with roleFileOwnedByProduct=true and roleFileSha256. A pre-existing file is never claimed or replaced: identical content is kept as the user's, different content stops setup before any config write.",
+    "desktopShortcut": "Created only with -CreateDesktopShortcut, and removed only when it points at this product's launcher.",
+    "restoreDriftGuard": "config.toml is replaced by -RestoreBackup only when its SHA256 matches install state configSha256AfterInstall."
+  },
+  "safetyGuards": {
+    "installRootInsideKit": "Setup refuses an -InstallRoot that is the kit folder or inside it, because state, logs and config backups can contain credentials and must never land in a source checkout. Checked before any file is written, including before the log path is opened.",
+    "fixtureManifest": "A runtime manifest marked fixtureOnly/isFixture/testFixture = true, publishable = false or kind = fixture|stub|test|mock is refused even when its hashes match. The guard also runs when -SkipManifestVerification is used, since that switch skips hash comparison only.",
+    "encoding": "Files are decoded as strict UTF-8 (with UTF-8/UTF-16/UTF-32 byte order marks detected). A file that is not valid UTF-8 is refused with instructions instead of being silently re-encoded, so bytes outside the managed block are never damaged.",
+    "atomicWrite": "Files are written to a sibling temporary file and then swapped into place with File.Replace, falling back to delete-and-move. An interrupted write can only leave a detectably named temporary file, never a truncated config.",
+    "caseSensitiveCompare": "Content comparisons use -ceq/-cne, so a managed block or role file that differs only in letter case counts as different and is never silently deleted or called up to date.",
+    "checkOnlyReadOnly": "Start-DeepSeekNative.ps1 -CheckOnly writes no log unless -LogPath is supplied; Test-DeepSeekNative.ps1 writes nothing unless -ReportPath is supplied.",
+    "testRuntimeOptIn": "The only test that touches a real codex.exe requires DEEPSEEK_NATIVE_TEST_RUNTIME or -RealRuntimeDirectory. There is no fallback to any installed runtime, and no personal path is stored in the repository."
+  },
+  "configFiles": [
+    { "path": "config/defaults.json", "role": "single source of truth for names, paths and versions" },
+    { "path": "config/agents.deepseek_flash.toml", "role": "template for <CodexHome>/agents/deepseek_flash.toml" },
+    { "path": "config/managed-block.toml.fragment", "role": "template for the managed block; {{CONFIG_FILE}} is replaced with a TOML basic string" }
+  ],
+  "testEntryPoint": "tests/Invoke-Tests.ps1",
+  "environment": {
+    "powerShell": "Windows PowerShell 5.1 or PowerShell 7+",
+    "platform": "Windows 10/11 x64",
+    "network": "no network access required by install, launcher or tests"
+  },
+  "runtimeContract": {
+    "producedBy": "share_ci_build (.github/workflows + build/) as a clean patched runtime ZIP built with Windows MSVC",
+    "requiredFiles": ["codex.exe", "codex-command-runner.exe", "codex-windows-sandbox-setup.exe", "codex-code-mode-host.exe"],
+    "expectedVersion": "0.153.4",
+    "hashPolicy": "A developer debug build SHA is never required. Optional release SHA manifest verification is supported via -RuntimeManifest or a runtime-manifest.json next to codex.exe."
+  }
+}

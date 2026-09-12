@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "product": "codex-deepseek-native",
+  "marker": "codex-deepseek-native-managed",
+  "roleName": "deepseek_flash",
+  "roleTable": "agents.deepseek_flash",
+  "roleConfigRelativePath": "agents/deepseek_flash.toml",
+  "providerId": "codex-router",
+  "providerTable": "model_providers.codex-router",
+  "model": "deepseek/deepseek-v4-flash",
+  "reasoningEffort": "high",
+  "minimumRuntimeVersion": "0.153.4",
+  "knownGoodRuntimeVersion": "0.153.4",
+  "runtimeManifestFileName": "runtime-manifest.json",
+  "installRootName": ".codex-deepseek-native",
+  "subdirectories": {
+    "runtime": "runtime",
+    "state": "state",
+    "logs": "logs",
+    "backups": "backups"
+  },
+  "requiredRuntimeFiles": [
+    "codex.exe",
+    "codex-command-runner.exe",
+    "codex-windows-sandbox-setup.exe",
+    "codex-code-mode-host.exe"
+  ],
+  "recommendedRuntimeFiles": [],
+  "desktopPackageName": "OpenAI.Codex",
+  "desktopRelativeExePath": "app\\ChatGPT.exe",
+  "desktopProcessName": "ChatGPT",
+  "defaultRouterBaseUrl": "http://127.0.0.1:4202",
+  "routerHealthPath": "/health",
+  "routerModelsPath": "/v1/models",
+  "stateFileName": "install-state.json",
+  "evidenceFileName": "verification-evidence.json"
+}

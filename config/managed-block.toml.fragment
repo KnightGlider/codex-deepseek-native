@@ -1,0 +1,8 @@
+# BEGIN codex-deepseek-native-managed
+# Managed block for the native DeepSeek subagent role.
+# Added by scripts/Install-DeepSeekNative.ps1; removed by scripts/Uninstall-DeepSeekNative.ps1.
+# Everything between the BEGIN and END markers is generated. Do not edit by hand.
+[agents.deepseek_flash]
+description = "DeepSeek Flash native coding subagent; keeps the parent task on its selected OpenAI model."
+config_file = {{CONFIG_FILE}}
+# END codex-deepseek-native-managed

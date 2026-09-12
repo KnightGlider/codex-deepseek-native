@@ -1,0 +1,5 @@
+# Test sandboxes are created under the user temp directory, never inside the repo.
+# These patterns only catch stray artifacts if a sandbox leaks.
+.sandbox/
+*.sandbox/
+*.tmp.log

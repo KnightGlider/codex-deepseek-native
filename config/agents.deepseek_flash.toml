@@ -1,0 +1,5 @@
+name = "deepseek_flash"
+description = "DeepSeek Flash native coding subagent. Runs substantial, well-bounded implementation, edit and test work on the user's DeepSeek plan while the main task keeps its selected OpenAI model."
+model_provider = "codex-router"
+model = "deepseek/deepseek-v4-flash"
+model_reasoning_effort = "high"

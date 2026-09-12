@@ -1,0 +1,15 @@
+Codex DeepSeek Native — community integration kit
+
+Based in part on OpenAI Codex, Copyright 2025 OpenAI, licensed under Apache-2.0.
+The upstream attribution notice is reproduced in licenses/codex-NOTICE.txt.
+
+Router patch portions are based on codex-router, Copyright 2026 codex-router
+contributors, licensed under MIT. See licenses/codex-router-MIT.txt.
+
+Modifications distributed by KnightGlider in 2026: role-scoped model-provider
+selection and regression tests; follow-up-aware native-agent cleanup in the
+router; portable setup, launch, build and verification materials.
+
+This is an unofficial community project, not an OpenAI or DeepSeek release.
+Names identify interoperability targets and do not imply endorsement.
+External tools and downloaded dependencies retain their own licenses.
