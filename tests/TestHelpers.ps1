@@ -292,6 +292,9 @@ function Invoke-TestSuite {
     }
 
     $stopwatch.Stop()
+    if ($results.Count -eq 0) {
+        throw "No tests matched filter '$Filter'. Check the test group or name."
+    }
     $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
     $passed = @($results | Where-Object { $_.Status -eq 'PASS' })
     $skipped = @($results | Where-Object { $_.Status -eq 'SKIP' })

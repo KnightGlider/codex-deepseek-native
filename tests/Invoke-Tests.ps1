@@ -740,6 +740,111 @@ Register-Test 'A normal release manifest is still accepted' {
     Assert-True $result.Verified
 }
 
+Register-Test 'A manifest that hashes only extra files does not verify the runtime' {
+    $environment = New-TestEnvironment
+    $manifestPath = Join-Path $environment.Runtime 'runtime-manifest.json'
+    $readme = Join-Path $environment.Runtime 'README.md'
+    Write-Utf8NoBom -Path $readme -Text 'not a runtime'
+
+    $manifest = [ordered]@{
+        version = '0.153.4'
+        files   = [ordered]@{ 'README.md' = (Get-DseFileSha256 -Path $readme) }
+    }
+    Write-Utf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 5)
+
+    $result = Test-DseRuntimeManifest -RuntimeDirectory $environment.Runtime
+    Assert-False $result.Verified 'A README hash must not count as a verified runtime'
+    Assert-True (@($result.Problems) -join ' ' -match '(?i)unexpected file')
+    Assert-True (@($result.Problems) -join ' ' -match '(?i)missing required file')
+}
+
+Register-Test 'A manifest must list all four runtime files' {
+    $environment = New-TestEnvironment
+    $manifestPath = Join-Path $environment.Runtime 'runtime-manifest.json'
+    $manifest = Read-Text $manifestPath | ConvertFrom-Json
+    $manifest.files.PSObject.Properties.Remove('codex-code-mode-host.exe')
+    Write-Utf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 5)
+
+    $result = Test-DseRuntimeManifest -RuntimeDirectory $environment.Runtime
+    Assert-False $result.Verified
+    Assert-True (@($result.Problems) -join ' ' -match '(?i)missing required file.*codex-code-mode-host')
+}
+
+Register-Test 'The array form of a manifest is understood' {
+    $environment = New-TestEnvironment
+    $manifestPath = Join-Path $environment.Runtime 'runtime-manifest.json'
+    $objectForm = Read-Text $manifestPath | ConvertFrom-Json
+
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($property in $objectForm.files.PSObject.Properties) {
+        $list.Add([pscustomobject]@{ name = "$($property.Name)"; sha256 = "$($property.Value)" })
+    }
+    $manifest = [ordered]@{ version = '0.153.4'; files = $list.ToArray() }
+    Write-Utf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 5)
+
+    $result = Test-DseRuntimeManifest -RuntimeDirectory $environment.Runtime
+    Assert-True $result.Present
+    Assert-True $result.Verified ("The array form must verify`nProblems: " + (@($result.Problems) -join '; '))
+    Assert-Equal 4 @($result.Results).Count
+
+    # A tampered file must still be caught in the array form.
+    Write-Utf8NoBom -Path (Join-Path $environment.Runtime 'codex.exe') -Text 'tampered'
+    $tampered = Test-DseRuntimeManifest -RuntimeDirectory $environment.Runtime
+    Assert-False $tampered.Verified
+    Assert-Contains $tampered.Mismatches 'codex.exe'
+}
+
+Register-Test 'Bad manifest hashes and names are rejected' {
+    $cases = @(
+        @{ Why = 'a hash that is not a sha256'; Edit = { param($m) $m.files.'codex.exe' = 'not-a-hash' } },
+        @{ Why = 'a path traversal name'; Edit = { param($m) $m.files | Add-Member -NotePropertyName '..\..\evil.exe' -NotePropertyValue ('a' * 64) -Force } },
+        @{ Why = 'a subfolder name'; Edit = { param($m) $m.files | Add-Member -NotePropertyName 'sub\codex.exe' -NotePropertyValue ('a' * 64) -Force } },
+        @{ Why = 'a duplicate entry'; Edit = { param($m) $m.files | Add-Member -NotePropertyName 'codex.exe ' -NotePropertyValue ('a' * 64) -Force } }
+    )
+
+    foreach ($case in $cases) {
+        $environment = New-TestEnvironment
+        $manifestPath = Join-Path $environment.Runtime 'runtime-manifest.json'
+        $manifest = Read-Text $manifestPath | ConvertFrom-Json
+        & $case.Edit $manifest
+        Write-Utf8NoBom -Path $manifestPath -Text ($manifest | ConvertTo-Json -Depth 5)
+
+        $result = Test-DseRuntimeManifest -RuntimeDirectory $environment.Runtime
+        Assert-False $result.Verified "A manifest with $($case.Why) must not verify"
+        Assert-True (@($result.Problems).Count -ge 1) "Expected a problem to be reported for $($case.Why)"
+    }
+}
+
+Register-Test 'A manifest with no files section is rejected' {
+    $environment = New-TestEnvironment
+    $manifestPath = Join-Path $environment.Runtime 'runtime-manifest.json'
+    Write-Utf8NoBom -Path $manifestPath -Text (@{ version = '0.153.4' } | ConvertTo-Json)
+
+    $result = Test-DseRuntimeManifest -RuntimeDirectory $environment.Runtime
+    Assert-False $result.Verified
+    Assert-True (@($result.Problems) -join ' ' -match "(?i)no 'files' section")
+}
+
+Register-Test 'A partial manifest is refused by setup and leaves config.toml alone' {
+    $environment = New-TestEnvironment
+    Write-Utf8NoBom -Path $environment.ConfigPath -Text $script:UnrelatedConfig
+    $configBefore = Get-DseFileSha256 -Path $environment.ConfigPath
+
+    $manifestPath = Join-Path $environment.Runtime 'runtime-manifest.json'
+    $readme = Join-Path $environment.Runtime 'README.md'
+    Write-Utf8NoBom -Path $readme -Text 'docs only'
+    Write-Utf8NoBom -Path $manifestPath -Text ([ordered]@{
+        version = '0.153.4'
+        files   = [ordered]@{ 'README.md' = (Get-DseFileSha256 -Path $readme) }
+    } | ConvertTo-Json -Depth 5)
+
+    $result = Invoke-InstallScript -Environment $environment
+    Assert-Equal 1 $result.ExitCode "Expected the manifest guard to stop setup`n$($result.All)"
+    Assert-Match $result.All '(?i)unexpected file|missing required file'
+    Assert-Equal $configBefore (Get-DseFileSha256 -Path $environment.ConfigPath) 'config.toml must not be touched'
+    Assert-FileMissing $environment.StatePath
+}
+
 Register-Test 'Version text parsing and the minimum version rule' {
     Assert-Equal ([version]'0.153.4') (Get-DseVersionFromText 'codex 0.153.4')
     Assert-Equal ([version]'0.153.4') (Get-DseVersionFromText "codex-cli 0.153.4`r`n")
@@ -1236,6 +1341,32 @@ Register-Test 'The launcher does write a log when one is asked for' {
     Assert-Match (Read-Text $logPath) 'PASS'
 }
 
+Register-Test 'A normal launch is refused when an earlier check failed' {
+    $launcher = Read-Text $script:StartScript
+    Assert-Match $launcher 'failedBeforeLaunch' 'The launcher must inspect the accumulated check results before starting'
+    Assert-Match $launcher '(?i)so the app was not started'
+
+    # Prove it at run time: a broken role file fails a check, so a real launch
+    # attempt must stop and never call Process.Start.
+    $environment = New-TestEnvironment
+    Assert-Equal 0 (Invoke-InstallScript -Environment $environment).ExitCode
+    Remove-Item -LiteralPath $environment.ConfigPath -Force
+    $fakeDesktop = New-FakeDesktopExe -Environment $environment
+
+    $arguments = @(
+        '-CodexHome', $environment.CodexHome,
+        '-InstallRoot', $environment.InstallRoot,
+        '-RuntimeDirectory', $environment.Runtime,
+        '-DesktopExePath', $fakeDesktop,
+        '-SkipVersionProbe',
+        '-NoPause'
+    )
+    $result = Invoke-ChildScript -ScriptPath $script:StartScript -Arguments $arguments
+    Assert-Equal 1 $result.ExitCode "Expected the launch to be refused`n$($result.All)"
+    Assert-Match $result.All '(?i)so the app was not started'
+    Assert-Match $result.All '\[FAIL\]'
+}
+
 # ------------------------------------------------------------------- shortcuts
 
 Describe-Group 'Desktop shortcut'
@@ -1370,18 +1501,29 @@ Register-Test 'Rollback -RestoreBackup refuses to overwrite config edited after 
     # The user adds an unrelated setting after setup. That edit must survive.
     $edited = (Read-Text $environment.ConfigPath) + "`n[tui]`ntheme = `"dark`"`n"
     Write-Utf8NoBom -Path $environment.ConfigPath -Text $edited
-    $editedAfterBlockRemoval = $edited -replace '(?ms)\r?\n?# BEGIN codex-deepseek-native-managed.*?# END codex-deepseek-native-managed\r?\n', ''
+    $before = Get-DseFileSha256 -Path $environment.ConfigPath
 
     $result = Invoke-UninstallScript -Environment $environment -Extra @('-RestoreBackup')
     Assert-NotEqual 0 $result.ExitCode "Expected the restore to be refused`n$($result.All)"
     Assert-Match $result.All '(?i)edited after setup'
-    Assert-Match $result.All '(?i)untouched'
+    Assert-Match $result.All '(?i)Nothing was changed'
+    Assert-Match $result.All '(?i)backup was kept'
 
+    # A refused restore stops before ANY change, so the managed block is still
+    # present here. That is deliberate: the preflight runs before the rollback
+    # touches config.toml, so nothing is ever half-applied.
     $after = Read-Text $environment.ConfigPath
     Assert-Match $after 'theme = "dark"' 'The later user edit must still be there'
-    Assert-NotMatch $after 'codex-deepseek-native-managed' 'The managed block must still have been removed'
-    Assert-Equal $editedAfterBlockRemoval $after 'The file must be exactly the edited one without the managed block'
-    Assert-Match $result.All '(?i)still available at' 'The backup must be pointed out for manual use'
+    Assert-Match $after 'codex-deepseek-native-managed' 'Nothing may be removed when the restore is refused'
+    Assert-Equal $before (Get-DseFileSha256 -Path $environment.ConfigPath) 'The file must be byte for byte untouched'
+    Assert-Match $result.All '(?i)Rollback stopped before changing anything' 'The refusal must say it stopped before changing anything'
+    Assert-Match $result.All '(?i)without -RestoreBackup' 'The refusal must point at the retry that still works'
+
+    # And that retry does clean up the managed additions.
+    $retry = Invoke-UninstallScript -Environment $environment
+    Assert-Equal 0 $retry.ExitCode ("exit $($retry.ExitCode)`n$($retry.All)")
+    Assert-NotMatch (Read-Text $environment.ConfigPath) 'codex-deepseek-native-managed'
+    Assert-Match (Read-Text $environment.ConfigPath) 'theme = "dark"'
 }
 
 Register-Test 'Rollback -RestoreBackup refuses when the state has no recorded post-install hash' {
@@ -1396,6 +1538,78 @@ Register-Test 'Rollback -RestoreBackup refuses when the state has no recorded po
     $result = Invoke-UninstallScript -Environment $environment -Extra @('-RestoreBackup')
     Assert-NotEqual 0 $result.ExitCode "Expected the restore to be refused`n$($result.All)"
     Assert-Match $result.All '(?i)safe restore cannot be verified'
+}
+
+Register-Test 'Reinstall after later edits cannot make -RestoreBackup overwrite them' {
+    $environment = New-TestEnvironment
+    Write-Utf8NoBom -Path $environment.ConfigPath -Text $script:UnrelatedConfig
+
+    # Install once (backup 1 pairs the original file with the installed file).
+    Assert-Equal 0 (Invoke-InstallScript -Environment $environment).ExitCode
+
+    # The user then edits config.toml, and setup is run again. This second run
+    # creates its own backup and must replace the older restore point, so the
+    # recorded baseline always belongs to the newest backup.
+    $edited = (Read-Text $environment.ConfigPath) + "`n[tui]`ntheme = `"dark`"`n"
+    Write-Utf8NoBom -Path $environment.ConfigPath -Text $edited
+    Assert-Equal 0 (Invoke-InstallScript -Environment $environment).ExitCode
+
+    $state = Read-Text $environment.StatePath | ConvertFrom-Json
+    Assert-Equal (Get-DseFileSha256 -Path $environment.ConfigPath) "$($state.configSha256AfterInstall)"
+    Assert-Equal "$($state.restorePoint.replacedWithSha)" "$($state.configSha256AfterInstall)" 'The restore point must pair with the newest baseline'
+    Assert-Equal $edited (Read-Text $state.restorePoint.backup) 'The newest backup must hold the file the second install replaced'
+
+    # Now the user edits again and rollback asks to restore.
+    $editedAgain = (Read-Text $environment.ConfigPath) + "`n[history]`npersistence = `"none`"`n"
+    Write-Utf8NoBom -Path $environment.ConfigPath -Text $editedAgain
+    $before = Get-DseFileSha256 -Path $environment.ConfigPath
+
+    $result = Invoke-UninstallScript -Environment $environment -Extra @('-RestoreBackup')
+    Assert-NotEqual 0 $result.ExitCode "Expected the restore to be refused`n$($result.All)"
+    Assert-Match $result.All '(?i)edited after setup'
+    Assert-Match $result.All '(?i)Nothing was changed'
+    Assert-Equal $before (Get-DseFileSha256 -Path $environment.ConfigPath) 'The later edits must survive untouched'
+    Assert-Match (Read-Text $environment.ConfigPath) 'theme = "dark"'
+    Assert-Match (Read-Text $environment.ConfigPath) 'persistence = "none"'
+}
+
+Register-Test 'An unpaired older backup is refused rather than matched to a new baseline' {
+    $environment = New-TestEnvironment
+    Write-Utf8NoBom -Path $environment.ConfigPath -Text $script:UnrelatedConfig
+    Assert-Equal 0 (Invoke-InstallScript -Environment $environment).ExitCode
+
+    # Simulate a state file written by an older version: a backup with no pairing
+    # information. The restore must refuse rather than guess.
+    $state = Read-Text $environment.StatePath | ConvertFrom-Json
+    $state.PSObject.Properties.Remove('restorePoint')
+    foreach ($record in @($state.backups)) {
+        $record.PSObject.Properties.Remove('replacedWithSha')
+    }
+    Write-Utf8NoBom -Path $environment.StatePath -Text ($state | ConvertTo-Json -Depth 8)
+    $before = Get-DseFileSha256 -Path $environment.ConfigPath
+
+    $result = Invoke-UninstallScript -Environment $environment -Extra @('-RestoreBackup')
+    Assert-NotEqual 0 $result.ExitCode "Expected the restore to be refused`n$($result.All)"
+    Assert-Match $result.All '(?i)not paired'
+    Assert-Equal $before (Get-DseFileSha256 -Path $environment.ConfigPath)
+    Assert-Match (Read-Text $environment.ConfigPath) 'codex-deepseek-native-managed' 'The refusal must happen before the block is removed'
+}
+
+Register-Test 'A refused restore leaves the install completely untouched' {
+    $environment = New-TestEnvironment
+    Write-Utf8NoBom -Path $environment.ConfigPath -Text $script:UnrelatedConfig
+    Assert-Equal 0 (Invoke-InstallScript -Environment $environment).ExitCode
+    Add-Content -LiteralPath $environment.ConfigPath -Value '# edited after install'
+
+    $configBefore = Get-DseFileSha256 -Path $environment.ConfigPath
+    $roleBefore = Get-DseFileSha256 -Path $environment.RolePath
+
+    $result = Invoke-UninstallScript -Environment $environment -Extra @('-RestoreBackup')
+    Assert-NotEqual 0 $result.ExitCode
+    Assert-Equal $configBefore (Get-DseFileSha256 -Path $environment.ConfigPath) 'A refused restore must not change config.toml'
+    Assert-Equal $roleBefore (Get-DseFileSha256 -Path $environment.RolePath) 'A refused restore must not change the role file'
+    Assert-Match $result.All '(?i)stopped before changing anything'
+    Assert-Match $result.All '(?i)without -RestoreBackup'
 }
 
 Register-Test 'Rollback never deletes the runtime folder or the install folder contents' {

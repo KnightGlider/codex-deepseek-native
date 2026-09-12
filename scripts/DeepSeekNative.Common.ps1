@@ -863,6 +863,11 @@ function Test-DseRuntimeManifest {
     $mismatches = New-Object System.Collections.Generic.List[string]
 
     foreach ($entry in $entries) {
+        # Never touch the filesystem for a name that was already rejected. A
+        # traversal name must not even be turned into a path.
+        if ($requiredNames -notcontains $entry.Name -or $entry.Name -match '[\\/]' -or $entry.Name -match '\.\.') {
+            continue
+        }
         $filePath = Join-Path $RuntimeDirectory $entry.Name
         if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
             $missing.Add($entry.Name)

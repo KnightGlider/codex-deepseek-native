@@ -61,6 +61,8 @@ After verifying the patched backend and role, ask your coordinator:
 
 The coordinator selects `agent_type="deepseek_flash"` and omits a model override. For ordinary GPT workers, it omits that role. Follow-up messages can resume the same child, and finished children should be closed/interrupted so the panel marks them done.
 
+To keep that preference across tasks in a project, merge the [optional project instructions](examples/AGENTS.md) into its existing `AGENTS.md`. Preserve any instructions already there.
+
 ## What was verified, and what was not
 
 The local implementation was tested with native GPT and DeepSeek agents running concurrently, a follow-up to the same DeepSeek child, actual file edits, and the desktop Subagents panel. A larger three-agent game exercise also completed. [Verification details](docs/verification.md) distinguish those observations from unit checks and broader test failures.

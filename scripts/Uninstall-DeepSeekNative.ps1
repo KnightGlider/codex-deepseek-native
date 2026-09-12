@@ -291,100 +291,20 @@ try {
     }
 
     # ----------------------------------------------------------- backup restore
-    if ($RestoreBackup) {
-        $configBackups = @()
-        if ($state -and $state.backups) {
-            $configBackups = @($state.backups | Where-Object { $_.source -eq $configPath -and $_.backup })
-        }
-
-        if ($configBackups.Count -eq 0) {
-            Add-Problem 'No recorded config.toml backup exists, so -RestoreBackup did nothing.'
-        }
-        else {
-            # Prefer the restore point recorded by the install that is still in
-            # place: it pairs one backup with the exact content that replaced it.
-            # Falling back to "newest backup" could match an older backup with a
-            # newer baseline and overwrite edits made after the first install.
-            $chosen = $null
-            if ($state -and $state.restorePoint -and $state.restorePoint.backup) {
-                $chosen = $state.restorePoint
+    # The decision was made in the preflight above and it already stopped the
+    # script when a restore would not have been safe. Nothing is left to check.
+    if ($RestoreBackup -and $restoreChosen) {
+        Write-Step "Restore     : $($restoreChosen.backup) (verified before any change)"
+        if ($PSCmdlet.ShouldProcess($configPath, "Restore from $($restoreChosen.backup)")) {
+            $preRestore = $null
+            if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+                $preRestore = Copy-DseBackup -Path $configPath -BackupDirectory $backupDirectory -Label 'config.toml.pre-restore'
+                if ($preRestore) { Write-Step "              current file saved as $preRestore" }
             }
-            if (-not $chosen) {
-                $candidates = @($configBackups | Where-Object { $_.replacedWithSha })
-                if ($candidates.Count -gt 0) {
-                    $chosen = $candidates | Sort-Object { $_.backup } | Select-Object -Last 1
-                }
-                else {
-                    $chosen = $configBackups | Sort-Object { $_.backup } | Select-Object -Last 1
-                }
-                Write-Host '  WARNING: this install has no paired restore point, so the newest backup was used.' -ForegroundColor Yellow
-            }
-            if (-not (Test-Path -LiteralPath $chosen.backup -PathType Leaf)) {
-                Add-Problem "The recorded backup file is missing: $($chosen.backup)"
-            }
-            else {
-                $integrity = 'not recorded'
-                if ($chosen.sha256) {
-                    $actualHash = Get-DseFileSha256 -Path $chosen.backup
-                    $integrity = 'matches the recorded hash'
-                    if ($actualHash -cne $chosen.sha256) {
-                        $integrity = 'DOES NOT match the recorded hash'
-                    }
-                }
-                Write-Step "Restore     : $($chosen.backup) ($integrity)"
-
-                # Only replace config.toml when it is byte for byte what setup
-                # left behind. If the user changed it after install, their file
-                # wins and the backup is kept for them to use by hand.
-                $driftReason = $null
-                $expectedInstalledSha = $null
-                if ($state -and $state.configSha256AfterInstall) {
-                    $expectedInstalledSha = "$($state.configSha256AfterInstall)"
-                }
-                # A backup is only the right restore source when it also recorded
-                # what replaced it, and that replacement is what is on disk now.
-                $backupReplacedSha = $null
-                if ($chosen.replacedWithSha) { $backupReplacedSha = "$($chosen.replacedWithSha)" }
-                if ($null -eq $configShaAtStart) {
-                    Write-Step '              config.toml is not present, so there is nothing to overwrite'
-                }
-                elseif (-not $expectedInstalledSha) {
-                    $driftReason = ('The install state does not record what config.toml looked like after setup, ' +
-                                    'so a safe restore cannot be verified.')
-                }
-                elseif (-not $backupReplacedSha) {
-                    $driftReason = ('The recorded backup is not paired with the content that replaced it, ' +
-                                    'so a safe restore cannot be verified.')
-                }
-                elseif ($backupReplacedSha -cne $expectedInstalledSha) {
-                    $driftReason = ('The recorded backup belongs to an earlier install, so restoring it would ' +
-                                    'discard later changes. The backup was kept.')
-                }
-                elseif ($configShaAtStart -cne $expectedInstalledSha) {
-                    $driftReason = ('config.toml was edited after setup, so it was not restored and your current ' +
-                                    'file is untouched.')
-                }
-
-                if ($integrity -eq 'DOES NOT match the recorded hash') {
-                    Add-Problem 'The backup file changed on disk, so it was not restored.'
-                }
-                elseif ($driftReason) {
-                    Add-Problem ("$driftReason The setup backup is still available at: $($chosen.backup)")
-                }
-                else {
-                    if ($PSCmdlet.ShouldProcess($configPath, "Restore from $($chosen.backup)")) {
-                        $preRestore = $null
-                        if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-                            $preRestore = Copy-DseBackup -Path $configPath -BackupDirectory $backupDirectory -Label 'config.toml.pre-restore'
-                            if ($preRestore) { Write-Step "              current file saved as $preRestore" }
-                        }
-                        Copy-Item -LiteralPath $chosen.backup -Destination $configPath -Force
-                        Write-Step '              config.toml restored from the setup backup'
-                        if ($script:LogPath) {
-                            Write-DseLog -Message "Restored $configPath from $($chosen.backup)" -LogPath $script:LogPath -Level 'PASS' | Out-Null
-                        }
-                    }
-                }
+            Copy-Item -LiteralPath $restoreChosen.backup -Destination $configPath -Force
+            Write-Step '              config.toml restored from the setup backup'
+            if ($script:LogPath) {
+                Write-DseLog -Message "Restored $configPath from $($restoreChosen.backup)" -LogPath $script:LogPath -Level 'PASS' | Out-Null
             }
         }
     }

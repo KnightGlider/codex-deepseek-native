@@ -156,16 +156,17 @@ the runtime folder the launcher expects.
 
 ### 6. Run the focused tests
 
-The focused tests that passed for this patch are the agent role tests and the
-multi-agent resume tests:
+With cargo-nextest installed, run the role and multi-agent handler unit tests.
+Run this from `codex-rs`, using the same toolchain environment as the build:
 
 ```powershell
-cargo test -p codex-core --locked -E "test(agent::role) | test(multi_agent_resume)"
+cargo nextest run -p codex-core --lib --locked --test-threads 2 --no-tests fail -E "test(agent::role::tests) | test(tools::handlers::multi_agents::tests)"
 ```
 
-That selection is **29 tests**, and they passed when this patch was prepared.
-The wider agent-related selection is described in
-[verification.md](verification.md).
+This is the current build workflow's unit selection, not a reconstruction of
+the earlier 29-test run. Historical results and their limits are described in
+[verification.md](verification.md). The optional integration selection is in
+`build/pins.json` and the automated build script.
 
 ## Disk space: the part that surprises people
 

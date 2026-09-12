@@ -50,16 +50,29 @@ the router.
 
 ## What was actually verified
 
+### Portable setup kit checks (September 12, 2026)
+
+The temporary-home setup suite passed **96 tests**, with **0 failures and 2
+opt-in checks skipped**, on both Windows PowerShell 5.1 and PowerShell 7.6.
+The skipped checks require an explicitly supplied real runtime or a persisted
+machine-profile value. The main reviewer independently repeated the 5.1 suite.
+The suite covers configuration preservation, reinstall and rollback, runtime
+manifests, fixture rejection, launch checks and read-only verification.
+
+The build-script checks passed **113 checks**, with **0 failures and 1 skipped**
+on both hosts. The skip was a local PyYAML parse; GitHub accepted and started
+the workflow. Synthetic native-observer fixtures also passed. These checks do
+not prove a newly compiled runtime works: source compilation and a live
+provider test are separate stages. [Current kit checks](https://github.com/KnightGlider/codex-deepseek-native/actions/workflows/check-kit.yml)
+and [runtime builds](https://github.com/KnightGlider/codex-deepseek-native/actions/workflows/build-windows-msvc.yml)
+report the results for each revision.
+
 ### Focused Rust tests
 
-The patch's focused test selection passed **29 of 29** tests. The selection is:
-
-```powershell
-cargo test -p codex-core --locked -E "test(agent::role) | test(multi_agent_resume)"
-```
-
-Those 29 tests include coverage for provider selection in agent roles and for
-multi-agent resume and follow-up.
+The original focused regression run passed **29 of 29** tests. This is a
+historical result, separate from the newer build workflow's broader selection.
+The repeatable current filters and commands live in [the build guide](../build/README.md)
+and `build/pins.json`; consult the actual CI run for its test count and result.
 
 ### Agent-related checks
 

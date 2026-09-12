@@ -1,0 +1,40 @@
+name: check-kit
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Check publication contents and observer fixtures
+        shell: pwsh
+        run: |
+          node verification/check-publication.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node verification/verify-observer.mjs
+          exit $LASTEXITCODE
+      - name: Test setup in temporary homes (Windows PowerShell)
+        shell: powershell
+        run: |
+          & powershell -NoProfile -ExecutionPolicy Bypass -File tests/Invoke-Tests.ps1 -Quiet
+          exit $LASTEXITCODE
+      - name: Test setup in temporary homes (PowerShell 7)
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File tests/Invoke-Tests.ps1 -Quiet
+          exit $LASTEXITCODE
+      - name: Validate build plan without building Rust
+        shell: pwsh
+        run: |
+          & pwsh -NoProfile -File build/tests/Test-BuildScripts.ps1
+          exit $LASTEXITCODE
